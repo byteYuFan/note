@@ -788,3 +788,574 @@ else {
         }
 ```
 
+## 20 loadServerConfig
+
+```c
+loadServerConfig(server.configfile, config_from_stdin, options);
+```
+
+这段函数大家也比较熟悉了，我在简单概述一下，详细请参考前面文章
+
+`loadServerConfig()` 函数用于加载 Redis 服务器的配置。它接受三个参数：
+
+- `configfile`：Redis 配置文件的路径。
+- `config_from_stdin`：是否从标准输入中读取配置。这个值会在解析命令行参数时被设置。
+- `options`：Redis 配置选项。这个字符串包含了从命令行读取到的 Redis 配置选项和对应的值。
+
+当 Redis 服务器启动时，它需要读取一个配置文件来确定一些基本配置参数。Redis 支持从命令行传递参数来覆盖这些基本配置参数，也支持从标准输入中读取配置，但是这些配置会覆盖命令行参数和配置文件参数。`loadServerConfig()` 函数的作用就是根据这些参数来加载 Redis 服务器的配置。
+
+## 21 哨兵模式运行
+
+```c
+if (server.sentinel_mode) loadSentinelConfigFromQueue();
+sdsfree(options);
+```
+
+这段代码主要是检查Redis是否在sentinel模式下运行，如果是，则调用`loadSentinelConfigFromQueue()`函数从sentinel.conf中加载配置。接着，释放options字符串的内存空间，因为在配置加载后，这个字符串就不再需要了。
+
+哨兵模式会在后面详细介绍
+
+## 21 检查哨兵配置文件
+
+```c
+ if (server.sentinel_mode) sentinelCheckConfigFile();
+```
+
+`sentinelCheckConfigFile()` 函数是用于检查 Sentinel 配置文件的函数。在 Redis Sentinel 模式下，Redis 实例是由 Sentinel 管理的，它需要一个 Sentinel 配置文件。该函数用于检查 Sentinel 配置文件是否正确配置。如果文件中没有配置 Redis Sentinel 的运行条件，则该函数会输出错误信息并导致 Redis Sentinel 启动失败。
+
+具体来说，`sentinelCheckConfigFile()` 函数首先检查配置文件是否存在。如果不存在，则函数会输出错误消息并导致 Sentinel 无法启动。如果存在，则函数会读取配置文件并检查其内容。配置文件应该至少包含以下内容：
+
+1. Sentinel 运行的端口号。
+2. 连接到 Redis 服务器的地址和端口。
+3. 在启动 Sentinel 之前，需要 Sentinel 所监控的 Redis 实例数量。
+4. Sentinel 的其他配置参数。
+
+如果配置文件中存在上述内容，则函数会返回 1。如果缺少其中任何一个内容，则函数会输出相应的错误消息并返回 0，导致 Sentinel 启动失败。
+
+总之，`sentinelCheckConfigFile()` 函数用于检查 Sentinel 配置文件的正确性，以确保 Sentinel 可以正确地监控 Redis 实例。
+
+```c
+void sentinelCheckConfigFile(void) {
+    if (server.configfile == NULL) {
+        serverLog(LL_WARNING,
+            "Sentinel needs config file on disk to save state. Exiting...");
+        exit(1);
+    } else if (access(server.configfile,W_OK) == -1) {
+        serverLog(LL_WARNING,
+            "Sentinel config file %s is not writable: %s. Exiting...",
+            server.configfile,strerror(errno));
+        exit(1);
+    }
+}
+```
+
+## 22 监控模式运行
+
+```c
+  server.supervised = redisIsSupervised(server.supervised_mode);
+```
+
+这行代码会根据 `server.supervised_mode` 的值来设置 `server.supervised` 的值，即 Redis 是否以监控模式运行。监控模式是指在启动 Redis 时将其交给一个监控进程（如 systemd）来管理，由监控进程负责自动重启 Redis 服务，以保证 Redis 服务的高可用性。
+
+具体来说，`redisIsSupervised` 函数会检查当前 Redis 进程是否被某个监控进程管理，检查方式因平台而异，Linux 上的实现是检查当前进程的父进程是否为 1（init 进程）。如果是，说明 Redis 进程被启动在监控模式下，否则不是。
+
+## 23 服务端后台运行
+
+```c
+int background = server.daemonize && !server.supervised;
+    if (background) daemonize();
+```
+
+这段代码的作用是判断当前 Redis 是否需要在后台运行，并在需要时执行 `daemonize()` 函数使其在后台运行。
+
+首先，通过 `server.daemonize` 变量来判断是否需要在后台运行。如果该变量的值为 1，表示需要在后台运行，否则为 0。
+
+其次，如果 Redis 是以 supervised 模式运行的，即 `server.supervised` 变量的值为 1，表示 Redis 在被 supervisord 进程管理，因此不需要在此处进行后台运行，因为 supervisord 会控制 Redis 进程的生命周期。如果 `server.supervised` 变量的值为 0，则表示 Redis 不是以 supervised 模式运行的，此时需要在后台运行，因此执行 `daemonize()` 函数将 Redis 进程 daemonize 到后台。
+
+最终，如果 Redis 需要在后台运行，则 `background` 变量的值为 1，否则为 0。
+
+```c
+void daemonize(void) {
+    int fd;
+
+    if (fork() != 0) exit(0); /* parent exits */
+    setsid(); /* create a new session */
+
+    /* Every output goes to /dev/null. If Redis is daemonized but
+     * the 'logfile' is set to 'stdout' in the configuration file
+     * it will not log at all. */
+    if ((fd = open("/dev/null", O_RDWR, 0)) != -1) {
+        dup2(fd, STDIN_FILENO);
+        dup2(fd, STDOUT_FILENO);
+        dup2(fd, STDERR_FILENO);
+        if (fd > STDERR_FILENO) close(fd);
+    }
+}
+```
+
+## 24 服务端输出启动信息
+
+```c
+  serverLog(LL_WARNING, "oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo");
+    serverLog(LL_WARNING,
+        "Redis version=%s, bits=%d, commit=%s, modified=%d, pid=%d, just started",
+            REDIS_VERSION,
+            (sizeof(long) == 8) ? 64 : 32,
+            redisGitSHA1(),
+            strtol(redisGitDirty(),NULL,10) > 0,
+            (int)getpid());
+
+```
+
+这段代码是 Redis 服务器启动时输出的一些启动信息，包括 Redis 版本、当前机器是 32 位还是 64 位、Redis 代码的 git commit ID、Redis 代码是否被修改过以及 Redis 服务器的进程 ID。这些信息可以帮助管理员在出现问题时更快地定位问题所在，也可以方便管理员确认 Redis 服务器启动后的状态。
+
+![](D:\桌面\note\redis文章\images\redis启动顶下.png)
+
+```c
+ if (argc == 1) {
+        serverLog(LL_WARNING, "Warning: no config file specified, using the default config. In order to specify a config file use %s /path/to/redis.conf", argv[0]);
+    } else {
+        serverLog(LL_WARNING, "Configuration loaded");
+    }
+```
+
+这段代码是用来记录Redis的启动信息的。如果在命令行中没有指定配置文件路径，则记录警告消息，表示使用默认配置。如果指定了配置文件，则记录“Configuration loaded”信息。
+
+## 25 initServer
+
+```c
+initServer();
+```
+
+这个函数也十分熟悉了，我不在赘述了。
+
+`initServer()`函数用于初始化服务器相关的结构体和参数，其主要执行以下操作：
+
+1. 初始化服务器状态结构体`server`的各个字段，如各个数据库的状态结构体、命令表、统计信息等；
+2. 设置服务器的各种默认参数值，如最大客户端数量、默认的最大内存限制等；
+3. 初始化随机数生成器，以便后续使用；
+4. 读取系统的配置参数，包括最大打开文件数量限制等；
+5. 设置崩溃处理函数，以便程序发生错误时能够及时处理；
+6. 初始化慢查询日志；
+7. 加载用户自定义的扩展命令；
+8. 初始化事件循环机制。
+
+总的来说，`initServer()`函数为服务器的正常运行打下了基础，后续的代码将会在此基础上进一步执行初始化和启动服务器的操作。
+
+## 26 创建PID文件
+
+```c
+if (background || server.pidfile) createPidFile();
+```
+
+这段代码用于创建PID文件。PID文件是一个文本文件，其中包含Redis服务器进程的进程ID。通过检查该文件，其他程序可以确定Redis服务器正在运行的进程ID，以便进行管理。如果服务器被配置为以守护进程方式运行，或者服务器需要将PID写入文件，则该函数将创建一个PID文件。如果服务器正在以监视模式运行，则不会创建PID文件。
+
+```c
+void createPidFile(void) {
+    /* If pidfile requested, but no pidfile defined, use
+     * default pidfile path */
+    if (!server.pidfile) server.pidfile = zstrdup(CONFIG_DEFAULT_PID_FILE);
+
+    /* Try to write the pid file in a best-effort way. */
+    FILE *fp = fopen(server.pidfile,"w");
+    if (fp) {
+        fprintf(fp,"%d\n",(int)getpid());
+        fclose(fp);
+    }
+}
+```
+
+## 27 修改进程名称
+
+```c
+if (server.set_proc_title) redisSetProcTitle(NULL);
+```
+
+这行代码是在调用redisSetProcTitle()函数，用来修改当前进程的名称，以便于更好地标识当前正在执行的程序。redisSetProcTitle()函数在不同的平台上会有不同的实现，这里不再赘述。在这里，如果server.set_proc_title变量的值为1，则执行redisSetProcTitle(NULL)函数，将当前进程的名称设置为NULL，即不显示名称。
+
+## 28 ASCII艺术字符画
+
+```c
+  redisAsciiArt();
+```
+
+![](D:\桌面\note\redis文章\images\艺术.png)
+
+`redisAsciiArt()`是Redis启动时打印的ASCII艺术字符画，类似于Logo。这个函数主要是为了让Redis启动时输出更加美观，增加用户体验。
+
+## 29 检查当前backlog
+
+```c
+ checkTcpBacklogSettings();
+```
+
+```c
+void checkTcpBacklogSettings(void) {
+#if defined(HAVE_PROC_SOMAXCONN)
+    FILE *fp = fopen("/proc/sys/net/core/somaxconn","r");
+    char buf[1024];
+    if (!fp) return;
+    if (fgets(buf,sizeof(buf),fp) != NULL) {
+        int somaxconn = atoi(buf);
+        if (somaxconn > 0 && somaxconn < server.tcp_backlog) {
+            serverLog(LL_WARNING,"WARNING: The TCP backlog setting of %d cannot be enforced because /proc/sys/net/core/somaxconn is set to the lower value of %d.", server.tcp_backlog, somaxconn);
+        }
+    }
+    fclose(fp);
+#elif defined(HAVE_SYSCTL_KIPC_SOMAXCONN)
+    int somaxconn, mib[3];
+    size_t len = sizeof(int);
+
+    mib[0] = CTL_KERN;
+    mib[1] = KERN_IPC;
+    mib[2] = KIPC_SOMAXCONN;
+
+    if (sysctl(mib, 3, &somaxconn, &len, NULL, 0) == 0) {
+        if (somaxconn > 0 && somaxconn < server.tcp_backlog) {
+            serverLog(LL_WARNING,"WARNING: The TCP backlog setting of %d cannot be enforced because kern.ipc.somaxconn is set to the lower value of %d.", server.tcp_backlog, somaxconn);
+        }
+    }
+#elif defined(HAVE_SYSCTL_KERN_SOMAXCONN)
+    int somaxconn, mib[2];
+    size_t len = sizeof(int);
+
+    mib[0] = CTL_KERN;
+    mib[1] = KERN_SOMAXCONN;
+
+    if (sysctl(mib, 2, &somaxconn, &len, NULL, 0) == 0) {
+        if (somaxconn > 0 && somaxconn < server.tcp_backlog) {
+            serverLog(LL_WARNING,"WARNING: The TCP backlog setting of %d cannot be enforced because kern.somaxconn is set to the lower value of %d.", server.tcp_backlog, somaxconn);
+        }
+    }
+#elif defined(SOMAXCONN)
+    if (SOMAXCONN < server.tcp_backlog) {
+        serverLog(LL_WARNING,"WARNING: The TCP backlog setting of %d cannot be enforced because SOMAXCONN is set to the lower value of %d.", server.tcp_backlog, SOMAXCONN);
+    }
+#endif
+}
+```
+
+
+
+在Redis中，当客户端连接Redis服务器时，Redis会创建一个TCP套接字以进行通信。在Linux系统中，这个套接字有一个backlog参数，用于指定允许挂起的未完成连接的最大数量。
+
+在`checkTcpBacklogSettings`函数中，Redis会检查当前backlog设置是否过低，如果过低，将打印一条警告日志。
+
+这是为了避免在客户端连接数增加时可能发生的连接超时或拒绝连接等问题。建议在高流量场景下将backlog设置得较高。
+
+## 30 初始化完成日志
+
+```c
+if (!server.sentinel_mode) {
+        /* Things not needed when running in Sentinel mode. */
+        serverLog(LL_WARNING,"Server initialized");
+```
+
+这段代码中，首先通过判断 `server.sentinel_mode` 是否为真来确定是否是在 Sentinel 模式下运行 Redis，如果不是，就打印一条日志，表示 Redis 服务器已初始化完毕。在 Sentinel 模式下，该语句不会被执行，因为在 Sentinel 模式下 Redis 服务器只会执行 Sentinel 相关的操作，不会执行普通 Redis 服务器的操作。
+
+## 31 Linux检查
+
+```c
+ #ifdef __linux__
+        linuxMemoryWarnings();
+        sds err_msg = NULL;
+        if (checkXenClocksource(&err_msg) < 0) {
+            serverLog(LL_WARNING, "WARNING %s", err_msg);
+            sdsfree(err_msg);
+        }
+    #if defined (__arm64__)
+        int ret;
+        if ((ret = checkLinuxMadvFreeForkBug(&err_msg)) <= 0) {
+            if (ret < 0) {
+                serverLog(LL_WARNING, "WARNING %s", err_msg);
+                sdsfree(err_msg);
+            } else
+                serverLog(LL_WARNING, "Failed to test the kernel for a bug that could lead to data corruption during background save. "
+                                      "Your system could be affected, please report this error.");
+            if (!checkIgnoreWarning("ARM64-COW-BUG")) {
+                serverLog(LL_WARNING,"Redis will now exit to prevent data corruption. "
+                                     "Note that it is possible to suppress this warning by setting the following config: ignore-warnings ARM64-COW-BUG");
+                exit(1);
+            }
+        }
+    #endif /* __arm64__ */
+```
+
+这段代码是对Linux操作系统下一些特定的问题进行检查和预警，其中包括：
+
+- linuxMemoryWarnings：在内存使用达到某个阈值时发出警告
+- checkXenClocksource：检查系统时钟源是否正确，如果不正确则可能导致性能下降
+- checkLinuxMadvFreeForkBug：检查系统是否受到特定内核bug影响，可能导致在后台保存数据时出现数据损坏
+
+如果发现问题，会记录日志，并在某些情况下终止Redis的运行。
+
+## 32 Redis模块
+
+```c
+      moduleInitModulesSystemLast();
+```
+
+`moduleInitModulesSystemLast()`是一个Redis模块的函数，它会在Redis服务器启动时执行，主要用于初始化所有已加载的Redis模块，并在Redis服务器成功启动时调用各个模块的回调函数。
+
+该函数主要完成以下操作：
+
+1. 遍历Redis模块列表，并调用每个模块的`RedisModule_OnLoad()`函数进行初始化。
+2. 在Redis服务器成功启动后，遍历Redis模块列表，并调用每个模块的`RedisModule_OnAfterFork()`函数进行初始化。
+3. 在Redis服务器成功启动后，遍历Redis模块列表，并调用每个模块的`RedisModule_EventuallyFree()`函数进行资源释放。
+
+这些模块的回调函数是通过Redis模块API在模块的代码中定义的，并在模块初始化时通过`RedisModuleTypeMethods`结构体注册到Redis服务器中。每个模块的回调函数的实现不同，可以在模块代码中自定义。
+
+该函数的作用是确保所有的Redis模块都已经正确初始化，并且已经被成功加载到Redis服务器中。这是Redis模块化架构的核心之一，使得Redis可以轻松地扩展和添加新功能。
+
+## 33 加载模块
+
+```c
+ moduleLoadFromQueue();
+```
+
+`moduleLoadFromQueue()`函数用于从队列中加载模块。在Redis服务器启动时，会从服务器配置文件中读取模块的相关配置，然后根据配置来加载模块。模块加载时，会检查模块的版本信息和依赖关系，并将模块的API函数注册到Redis服务器中，从而让模块可以被调用。
+
+在Redis服务器运行期间，如果需要加载新的模块或卸载现有的模块，可以通过发送`MODULE LOAD`或`MODULE UNLOAD`命令来实现。这些命令会将指定的模块信息发送到队列中，然后由`moduleLoadFromQueue()`函数来处理。如果加载或卸载成功，函数会返回相应的成功信息，否则会返回错误信息。
+
+## 34 ACL用户信息
+
+```c
+     ACLLoadUsersAtStartup();
+```
+
+`ACLLoadUsersAtStartup()` 是 Redis 在启动时加载 ACL 用户信息的函数。Redis 的 ACL (Access Control List) 功能可以用于控制用户对 Redis 实例的访问权限，从而保障 Redis 实例的安全性。
+
+`ACLLoadUsersAtStartup()` 的作用是读取 Redis 配置文件中指定的 ACL 配置，然后根据配置信息加载所有的用户和用户组到 Redis 实例中。如果没有配置 ACL，则默认使用 "default" 用户和 "allkeys" 用户组。
+
+在 Redis 实例启动时调用 `ACLLoadUsersAtStartup()` 可以确保 Redis 实例在加载完所有需要的用户和用户组之后再开始对外提供服务，从而保障 Redis 实例的安全性。
+
+## 35  InitServerLast
+
+```c
+  InitServerLast();
+```
+
+`InitServerLast()` 是 Redis 初始化的最后一个步骤，它完成了一些初始化工作：
+
+- 初始化慢日志，通过调用 `slowlogInit()` 函数完成。
+- 初始化服务器统计信息，通过调用 `statsMetricInit()` 函数完成。
+- 初始化时间事件，通过调用 `aeCreateTimeEvent()` 函数完成。
+- 初始化事件循环，通过调用 `aeMain()` 函数完成。
+
+总之，`InitServerLast()` 函数是 Redis 初始化的最后一步，在这里，Redis 完成了许多重要的初始化工作，准备好接受客户端的连接并开始工作。
+
+## 36 AOF元数据
+
+```c
+  aofLoadManifestFromDisk();
+```
+
+`aofLoadManifestFromDisk()`是Redis服务器启动后，加载持久化AOF模式的元数据文件的函数。AOF是Redis的一种持久化方式，会将每个修改Redis数据库的命令追加到AOF文件的末尾，以保证数据的持久化。
+
+该函数会在服务器启动时调用，用于读取`redis.aof_manifest`文件中的数据，并将数据解析成AOF文件的元数据结构。
+
+这个元数据包含了AOF文件的大小、最后一次执行AOF重写的时间、AOF文件的存储位置等信息。这些信息对于服务器进行AOF重写操作非常重要，因为服务器需要根据这些信息来决定是否需要执行AOF重写操作，以及应该如何进行AOF重写操作。
+
+在函数内部，首先尝试打开`redis.aof_manifest`文件，如果文件打开失败，说明当前服务器并不是第一次启动，也没有执行过AOF重写操作，可以直接返回。如果文件打开成功，则从文件中读取元数据信息，并根据这些信息来更新服务器状态。
+
+最后，如果有必要，函数会将新的AOF文件移动到指定位置。这样，AOF文件就已经加载完毕，并准备好接收新的命令追加。
+
+## 37 从磁盘回复文件
+
+```c
+ loadDataFromDisk();
+```
+
+`loadDataFromDisk()`是 Redis 在启动时从磁盘中加载数据的函数，主要功能是读取 RDB 文件（如果存在）并将其中的数据恢复到 Redis 内存中。
+
+具体来说，该函数首先尝试从配置文件中指定的 RDB 文件路径中加载 RDB 文件，如果找不到该文件，则尝试从自动备份文件中加载 RDB 文件。如果找到 RDB 文件，则执行 `rdbLoad()` 函数将其中的数据读取到 Redis 内存中。
+
+需要注意的是，如果 Redis 配置中开启了 AOF 持久化，那么在 `loadDataFromDisk()` 函数加载 RDB 文件之后，还需要调用 `aofRewriteIfNeeded()` 函数执行 AOF 重写操作。该操作会根据 AOF 文件中的数据重新生成 RDB 文件，并将其中的数据写入到新的 AOF 文件中。这样可以保证 RDB 文件和 AOF 文件中的数据一致。
+
+## 38 是否打开aof？
+
+```c
+   aofOpenIfNeededOnServerStart();
+```
+
+`aofOpenIfNeededOnServerStart()`函数主要用于在Redis服务器启动时打开AOF文件，如果服务器当前没有打开AOF持久化，则会根据配置项进行决定是否需要打开。
+
+具体来说，该函数会根据以下几个方面进行判断：
+
+- 是否在AOF重写过程中，如果是，则不需要打开AOF文件。
+- 是否开启了AOF持久化功能，如果没有，则不需要打开AOF文件。
+- 是否开启了AOF自动重写功能，如果开启了，则根据条件判断是否需要触发AOF自动重写，如果需要，则不需要打开AOF文件。
+- 如果以上条件都不满足，则需要打开AOF文件。
+
+在打开AOF文件之前，该函数还会尝试从AOF文件中载入数据到内存中。
+
+总的来说，`aofOpenIfNeededOnServerStart()`函数的作用就是在Redis服务器启动时恢复AOF持久化所保存的数据，使得Redis服务器能够恢复到上一次停机时的状态。
+
+## 39 删除旧的AOF文件
+
+```c
+aofDelHistoryFiles()
+```
+
+函数 `aofDelHistoryFiles()` 的作用是删除旧的 AOF 文件。在 AOF 持久化模式下，Redis 会将所有写入命令都追加到 AOF 文件中，以保证数据持久化。当 AOF 文件过大时，Redis 会对其进行压缩和重写，生成新的 AOF 文件。此时，旧的 AOF 文件可以被删除，以释放磁盘空间。
+
+在 Redis 启动时，`aofDelHistoryFiles()` 函数会检查是否开启了 AOF 持久化模式，并且是否启用了 AOF 压缩。如果开启了 AOF 压缩，那么 Redis 会保留多个历史版本的 AOF 文件，以便出现问题时可以回滚到之前的版本。此时，`aofDelHistoryFiles()` 函数会删除旧的 AOF 文件，只保留最近几个版本的 AOF 文件，以释放磁盘空间。
+
+需要注意的是，删除旧的 AOF 文件并不会影响 Redis 的正常运行。在下一次 AOF 压缩时，Redis 会自动清理不再使用的 AOF 文件。
+
+### 40 集群模式检查0号数据库
+
+```c
+   if (server.cluster_enabled) {
+            if (verifyClusterConfigWithData() == C_ERR) {
+                serverLog(LL_WARNING,
+                    "You can't have keys in a DB different than DB 0 when in "
+                    "Cluster mode. Exiting.");
+                exit(1);
+            }
+        }
+```
+
+这段代码的作用是在 Redis 以集群模式启动时，检查是否有非 0 号数据库中存在数据。在 Redis 集群模式下，每个节点只维护数据库 0，因此如果在其他数据库中有数据，则无法将该节点添加到集群中。如果发现存在非 0 号数据库中存在数据，程序将输出错误信息并退出。
+
+## 41 来连接吧！
+
+```c
+if (server.ipfd.count > 0 || server.tlsfd.count > 0)
+            serverLog(LL_NOTICE,"Ready to accept connections");
+```
+
+这段代码是在Redis启动成功后，当IP套接字或TLS套接字的数量大于0时，打印一个日志记录，表示Redis已经准备好接受客户端连接了。其中，LL_NOTICE是日志级别，表示普通提示信息。
+
+```c
+ if (server.sofd > 0)
+            serverLog(LL_NOTICE,"The server is now ready to accept connections at %s", server.unixsocket);
+```
+
+这段代码的作用是在Redis启动成功后，如果Redis实例绑定了TCP端口或TLS端口，或者绑定了Unix socket，就会在日志中打印出相应的提示信息，表明Redis已经准备好接收连接。在这里，LL_NOTICE级别的日志表示该信息是一个正常的通知信息，表明Redis启动成功并已准备好接收连接
+
+```c
+ if (server.supervised_mode == SUPERVISED_SYSTEMD) {
+            if (!server.masterhost) {
+                redisCommunicateSystemd("STATUS=Ready to accept connections\n");
+            } else {
+                redisCommunicateSystemd("STATUS=Ready to accept connections in read-only mode. Waiting for MASTER <-> REPLICA sync\n");
+            }
+            redisCommunicateSystemd("READY=1\n");
+        }
+    } else {
+        ACLLoadUsersAtStartup();
+        InitServerLast();
+        sentinelIsRunning();
+        if (server.supervised_mode == SUPERVISED_SYSTEMD) {
+            redisCommunicateSystemd("STATUS=Ready to accept connections\n");
+            redisCommunicateSystemd("READY=1\n");
+        }
+    }
+```
+
+这段代码是在 Redis 服务器启动后，执行各种初始化工作之后，最终准备好接受客户端连接之前执行的。在这段代码中，根据 Redis 是否在 systemd 监管模式下运行，服务器会与 systemd 进行通信以通知其已准备好接受连接。在非 systemd 监管模式下，Redis 会加载 ACL 用户信息，然后执行 InitServerLast 函数，该函数执行了一些其他的初始化工作，包括激活模块、开启 RDB/AOF 持久化、初始化 Sentinel 等。最后，Redis 会检查 Sentinel 是否正在运行，如果正在运行，将通过 Sentinel 的 API 向其它 Sentinel 实例发送消息，以通知它们当前实例已经启动。如果服务器在 systemd 监管模式下运行，则服务器也会通过 systemd 的 API 与其通信以通知其已准备好接受连接。
+
+## 42 内存限制
+
+```c
+ if (server.maxmemory > 0 && server.maxmemory < 1024*1024) {
+        serverLog(LL_WARNING,"WARNING: You specified a maxmemory value that is less than 1MB (current value is %llu bytes). Are you sure this is what you really want?", server.maxmemory);
+    }
+```
+
+这段代码是在检查服务器是否设置了最大内存限制，如果设置了限制但限制值小于1MB，会输出一个警告信息。警告信息中会显示当前设置的最大内存限制值。
+
+其中，`server.maxmemory`表示设置的最大内存限制值，单位为字节。在这里，用1024*1024表示1MB的字节数。如果`server.maxmemory`小于1MB的字节数，就会输出警告信息。输出信息使用了`serverLog()`函数，以`LL_WARNING`级别记录在日志中。
+
+## 43 CPU亲和性
+
+```c
+  redisSetCpuAffinity(server.server_cpulist);
+```
+
+`redisSetCpuAffinity`是Redis中的一个函数，用于设置Redis进程的CPU亲和性，即指定进程在哪些CPU上运行。
+
+在调用该函数之前，Redis会从配置文件中读取`server_cpulist`参数，该参数的值是一个以逗号分隔的CPU核心列表，例如"0,1,2,3"。如果该参数为空，则表示不设置CPU亲和性，Redis进程可以在任何CPU上运行。
+
+在Linux系统中，CPU亲和性可以通过`sched_setaffinity`系统调用来实现。Redis通过该系统调用将进程绑定到指定的CPU核心。具体来说，`redisSetCpuAffinity`函数会先检查当前系统是否支持`sched_setaffinity`系统调用，如果支持则根据`server_cpulist`参数的值调用`sched_setaffinity`函数，将Redis进程绑定到指定的CPU核心上。如果不支持，则该函数不执行任何操作。
+
+设置CPU亲和性可以提高Redis的性能，因为它可以避免进程在不同的CPU核心之间频繁切换，从而减少上下文切换的开销。另外，设置CPU亲和性还可以避免CPU缓存的失效，从而进一步提高Redis的性能。
+
+## 44 Redis在内存不足的稳定性
+
+```c
+  setOOMScoreAdj(-1);
+```
+
+`setOOMScoreAdj(-1)` 是 Redis 在启动时设置进程的 OOM Score（out-of-memory score） 的值为 -1，这个值表示系统不应该轻易地杀死这个进程。OOM Score 是 Linux 内核用来确定一个进程在内存不足的情况下是否应该被杀死的一个指标，它的值越低，表示这个进程越不容易被杀死。在 Redis 中，通过设置 OOM Score 为 -1，可以使得 Redis 进程在系统内存不足的情况下更难被系统杀死，从而提高 Redis 的稳定性和可靠性。
+
+## 45 Redis事件循环
+
+```c
+ aeMain(server.el);
+```
+
+```c
+void aeMain(aeEventLoop *eventLoop) {
+    eventLoop->stop = 0;
+    while (!eventLoop->stop) {
+        aeProcessEvents(eventLoop, AE_ALL_EVENTS|
+                                   AE_CALL_BEFORE_SLEEP|
+                                   AE_CALL_AFTER_SLEEP);
+    }
+}
+
+```
+
+`aeMain(server.el)`是Redis事件循环的主要函数，它通过循环遍历所有注册的文件事件和时间事件来实现事件的处理。参数`server.el`是Redis的事件状态结构体，其中包含了事件循环的状态信息。`aeMain()`函数会阻塞当前线程，直到有事件就绪，然后调用相应的事件处理函数。在事件处理完毕后，`aeMain()`函数会继续循环处理其他事件。这个函数在Redis启动后一直运行，直到Redis进程被关闭。
+
+## 46 END
+
+````c
+ aeDeleteEventLoop(server.el);
+````
+
+```c
+
+void aeDeleteEventLoop(aeEventLoop *eventLoop) {
+    aeApiFree(eventLoop);
+    zfree(eventLoop->events);
+    zfree(eventLoop->fired);
+
+    /* Free the time events list. */
+    aeTimeEvent *next_te, *te = eventLoop->timeEventHead;
+    while (te) {
+        next_te = te->next;
+        zfree(te);
+        te = next_te;
+    }
+    zfree(eventLoop);
+}
+```
+
+函数`aeDeleteEventLoop(server.el)`用于删除事件循环，释放事件循环所占用的内存。
+
+在Redis中，事件循环采用了第三方库`ae`提供的事件驱动框架。Redis的事件循环被封装在`aeEventLoop`结构体中，而函数`aeDeleteEventLoop(server.el)`则用于删除这个结构体。
+
+在Redis中，当进程结束时，会调用`aeDeleteEventLoop(server.el)`来释放事件循环所占用的内存。此外，当Redis进程需要进行重启时，也会先调用`aeDeleteEventLoop(server.el)`，再创建新的事件循环。
+
+需要注意的是，在Redis中，如果开启了AOF持久化功能，那么在Redis进程启动时，也会调用函数`aeDeleteEventLoop(server.el)`来删除旧的事件循环，然后重新创建新的事件循环。这个过程是在函数`redisServeCommands()`中完成的。
+
+## 47 总结
+
+Redis服务器启动过程大致可以分为以下几步：
+
+1. 初始化服务器的各个配置选项、日志系统和随机数生成器等，加载服务器所需的所有模块和库，并执行模块的初始化操作。
+2. 加载服务器的数据，包括配置文件中指定的数据、AOF文件、RDB文件等。
+3. 检查服务器是否在集群模式下运行，并进行相关的配置检查。
+4. 设置服务器的CPU亲和性，使其运行在指定的CPU上。
+5. 设置服务器的OOM分数，以控制内存使用。
+6. 如果服务器是在supervised模式下启动的，与systemd通信以报告服务器已准备好接受连接。
+7. 如果开启了maxmemory选项，检查其值是否大于1MB。
+8. 启动事件循环，开始处理客户端请求和其他事件。
+9. 在服务器关闭时，清理资源并释放内存。
+
+其中，步骤3和步骤8是比较关键的，因为它们涉及到了Redis的核心功能。在检查服务器是否在集群模式下运行时，如果服务器配置有误，将会强制退出。在启动事件循环后，服务器将开始监听客户端请求，并根据请求类型调用相应的处理函数进行处理，最终返回响应结果。在事件循环过程中，如果遇到了其他事件（如定时任务等），也会根据事件类型调用相应的处理函数进行处理。
+
+后面呢，我还会继续向大家详细的介绍里面重要的函数。希望大家继续关注哦。
