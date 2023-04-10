@@ -367,3 +367,424 @@ Redis 模块系统允许开发者通过动态加载模块，扩展 Redis 的功�
 8. 最后，为了提供更好的性能和安全性，Redis使用`setsockopt()`函数启用TCP Fast Open（TFO）特性，这将允许连接更快地建立。
 
 通过以上步骤，`tlsInit()`函数初始化了Redis服务器的TLS支持，并为加密通信创建了安全的TLS上下文。
+
+## 15 保存服务器信息
+
+```c
+ /* Store the executable path and arguments in a safe place in order
+     * to be able to restart the server later. */
+    server.executable = getAbsolutePath(argv[0]);
+    server.exec_argv = zmalloc(sizeof(char*)*(argc+1));
+    server.exec_argv[argc] = NULL;
+    for (j = 0; j < argc; j++) server.exec_argv[j] = zstrdup(argv[j]);
+```
+
+这段代码用于保存 Redis 服务器启动时的可执行文件路径和命令行参数，以便在重启服务器时使用。具体步骤如下：
+
+首先通过调用 `getAbsolutePath` 函数获取当前可执行文件的绝对路径，然后将其保存在 `server.executable` 变量中。接着使用 `zmalloc` 函数动态分配内存，分配 `argc+1` 个指向 `char` 类型的指针，将其保存在 `server.exec_argv` 变量中。最后使用 `zstrdup` 函数为每个命令行参数动态分配内存，并将指针保存在 `server.exec_argv` 数组中，最后将 `server.exec_argv` 数组的最后一个元素设置为 `NULL`。
+
+这样做的目的是为了在 Redis 服务器异常退出后，可以通过重新执行可执行文件并传入相同的命令行参数，来恢复 Redis 服务器的状态。这个机制通常用于自动重启 Redis 服务器，以提高 Redis 服务器的可用性。
+
+## 16 哨兵模式启动
+
+```c
+if (server.sentinel_mode) {
+        initSentinelConfig();
+        initSentinel();
+    }
+```
+
+这段代码在判断 Redis 是否是运行在 Sentinel 模式下。如果是，那么会先执行 `initSentinelConfig()` 来初始化 Sentinel 相关的配置信息，再调用 `initSentinel()` 来初始化 Sentinel 相关的数据结构和网络连接等。否则，不做任何处理，直接进入正常的 Redis 模式。这里所说的 Sentinel 是 Redis 高可用方案中的一个组件，用于实现自动故障转移等功能。
+
+这个功能将会在后续的哨兵处详细讲解
+
+## 17 检测RDB或者AOF文件
+
+```c
+  if (strstr(exec_name,"redis-check-rdb") != NULL)
+        redis_check_rdb_main(argc,argv,NULL);
+    else if (strstr(exec_name,"redis-check-aof") != NULL)
+        redis_check_aof_main(argc,argv);
+```
+
+这段代码主要是根据可执行文件名 `exec_name` 是否包含 `redis-check-rdb` 或者 `redis-check-aof` 字符串来决定执行对应的函数，即 `redis_check_rdb_main()` 或者 `redis_check_aof_main()` 函数。
+
+当 `redis-server` 启动时，会传入参数 `argv`，其中第一个参数是可执行文件名，例如 `/usr/local/bin/redis-server`。因此，可以通过查找 `argv[0]` 中是否包含特定的字符串来判断当前程序的运行模式。对于 `redis-check-rdb` 和 `redis-check-aof` 这两个程序来说，它们都是用来检查 Redis 数据文件的工具程序，因此需要单独的逻辑来处理。
+
+如果 `exec_name` 包含 `redis-check-rdb`，则会调用 `redis_check_rdb_main()` 函数；如果包含 `redis-check-aof`，则会调用 `redis_check_aof_main()` 函数。这两个函数都是用来检查 Redis 数据文件的工具程序，用于检查 RDB 文件和 AOF 文件的正确性和完整性。
+
+需要注意的是，这段代码是在 `if (server.sentinel_mode)` 的外层，因此它只有在 Redis Server 不是以 Sentinel 模式启动时才会执行。如果以 Sentinel 模式启动，那么不会执行这段代码，而是在 `initSentinel()` 函数中根据 Sentinel 模式启动的参数来决定是否执行数据文件检查的逻辑。
+
+## 18 检测用户命令行参数
+
+### 18.1 version
+
+```c
+  if (strcmp(argv[1], "-v") == 0 ||
+            strcmp(argv[1], "--version") == 0) version();
+```
+
+这段代码是用于检查用户是否传入了 -v 或 --version 参数，如果传入了这些参数，则调用 `version()` 函数打印 Redis 的版本信息。
+
+```c
+void version(void) {
+    printf("Redis server v=%s sha=%s:%d malloc=%s bits=%d build=%llx\n",
+        REDIS_VERSION,
+        redisGitSHA1(),
+        atoi(redisGitDirty()) > 0,
+        ZMALLOC_LIB,
+        sizeof(long) == 4 ? 32 : 64,
+        (unsigned long long) redisBuildId());
+    exit(0);
+}
+```
+
+这段代码实现了 `redis-server` 命令的版本号展示功能。当在命令行中执行 `redis-server -v` 或 `redis-server --version` 时，会触发 `version()` 函数，该函数会输出当前 Redis 服务器的版本号、Git SHA1 值、是否为脏数据版本、Redis 服务器使用的内存分配器、运行在 32 位还是 64 位机器上、以及构建 ID 等信息，然后使用 `exit()` 函数退出程序。
+
+### 18.2 help
+
+```c
+if (strcmp(argv[1], "--help") == 0 ||
+            strcmp(argv[1], "-h") == 0) usage();
+```
+
+这段代码是判断用户是否输入了`--help`或`-h`参数，并在用户输入时调用`usage()`函数来显示Redis的帮助信息。如果用户输入了这两个参数中的任意一个，`strcmp()`函数会返回0，进入if语句，执行`usage()`函数，否则继续执行Redis的主逻辑。
+
+```c
+void usage(void) {
+    fprintf(stderr,"Usage: ./redis-server [/path/to/redis.conf] [options] [-]\n");
+    fprintf(stderr,"       ./redis-server - (read config from stdin)\n");
+    fprintf(stderr,"       ./redis-server -v or --version\n");
+    fprintf(stderr,"       ./redis-server -h or --help\n");
+    fprintf(stderr,"       ./redis-server --test-memory <megabytes>\n");
+    fprintf(stderr,"       ./redis-server --check-system\n");
+    fprintf(stderr,"\n");
+    fprintf(stderr,"Examples:\n");
+    fprintf(stderr,"       ./redis-server (run the server with default conf)\n");
+    fprintf(stderr,"       echo 'maxmemory 128mb' | ./redis-server -\n");
+    fprintf(stderr,"       ./redis-server /etc/redis/6379.conf\n");
+    fprintf(stderr,"       ./redis-server --port 7777\n");
+    fprintf(stderr,"       ./redis-server --port 7777 --replicaof 127.0.0.1 8888\n");
+    fprintf(stderr,"       ./redis-server /etc/myredis.conf --loglevel verbose -\n");
+    fprintf(stderr,"       ./redis-server /etc/myredis.conf --loglevel verbose\n\n");
+    fprintf(stderr,"Sentinel mode:\n");
+    fprintf(stderr,"       ./redis-server /etc/sentinel.conf --sentinel\n");
+    exit(1);
+}
+```
+
+`usage()`函数是用来打印Redis服务器的使用帮助信息的。在命令行参数解析过程中，如果用户指定了`--help`或`-h`选项，则会调用该函数来打印帮助信息。
+
+该函数会向标准错误输出流（stderr）打印一些使用示例和选项说明。用户可以通过命令行参数来设置Redis的配置选项，例如指定配置文件路径、指定日志级别等。最后，函数通过调用`exit()`函数退出程序，返回状态码1。
+
+### 18.3 test-memory
+
+```c
+if (strcmp(argv[1], "--test-memory") == 0) {
+            if (argc == 3) {
+                memtest(atoi(argv[2]),50);
+                exit(0);
+            } else {
+                fprintf(stderr,"Please specify the amount of memory to test in megabytes.\n");
+                fprintf(stderr,"Example: ./redis-server --test-memory 4096\n\n");
+                exit(1);
+            }
+        } 
+```
+
+这段代码是处理 `--test-memory` 参数的，这个参数用于在启动 Redis 服务器之前测试系统内存的可用性。如果用户在命令行中指定了 `--test-memory` 参数并且提供了一个数字，那么 Redis 将测试系统中该数字大小的内存是否可用。如果内存可用，Redis 将打印一条消息并退出程序。如果用户没有提供数字或提供了错误的数字，则 Redis 将打印错误消息并退出程序。
+
+![](D:\桌面\note\redis文章\images\test-memory.png)
+
+### 18.4 系统检查
+
+```c
+  if (strcmp(argv[1], "--check-system") == 0) {
+            exit(syscheck() ? 0 : 1);
+        }
+```
+
+这段代码是在检查是否需要执行 Redis 系统检查（system check）。如果命令行参数中包含了 `--check-system` 参数，则执行系统检查，如果通过检查，则程序返回 0，否则返回 1，该返回值将被操作系统当作程序的返回值。如果没有包含 `--check-system` 参数，则不进行系统检查，程序继续向下执行。
+
+```c
+int syscheck(void) {
+    check *cur_check = checks;
+    int ret = 1;
+    sds err_msg = NULL;
+    while (cur_check->check_fn) {
+        int res = cur_check->check_fn(&err_msg);
+        printf("[%s]...", cur_check->name);
+        if (res == 0) {
+            printf("skipped\n");
+        } else if (res == 1) {
+            printf("OK\n");
+        } else {
+            printf("WARNING:\n");
+            printf("%s\n", err_msg);
+            sdsfree(err_msg);
+            ret = 0;
+        }
+        cur_check++;
+    }
+
+    return ret;
+}
+
+```
+
+这段代码实现了 Redis 服务器启动时的系统检查功能，主要是检查服务器运行所需的一些系统资源和配置参数是否满足要求。
+
+当执行 `./redis-server --check-system` 命令时，程序会调用 `syscheck` 函数进行系统检查。该函数首先会遍历全局数组 `checks`，该数组中存储了多个系统检查函数的指针，每个函数用于检查一个系统资源或参数。然后逐个调用每个检查函数，并根据检查结果输出相应的信息，最后返回整个系统检查的结果。
+
+其中，每个检查函数都需要返回一个整型值，表示检查的结果。如果返回值为 0，表示该检查函数被跳过；如果返回值为 1，表示该检查函数检查通过；如果返回值为其他非零值，表示该检查函数检查失败，此时需要将错误信息保存在 `err_msg` 指针指向的缓冲区中，并将返回值作为该函数的检查结果。
+
+需要注意的是，在遍历 `checks` 数组并调用检查函数时，程序会先输出一个类似 `[xxx]...` 的提示信息，其中 `xxx` 表示当前正在进行的检查任务的名称，方便用户了解当前检查任务的进展情况。如果某个检查任务被跳过，则程序不会输出任何信息；如果该任务检查通过，则程序输出 `OK` 字样；如果该任务检查失败，则程序输出 `WARNING` 字样，并将错误信息打印出来。最后，如果所有检查任务都检查通过，则 `syscheck` 函数返回 1；否则返回 0。
+
+![](D:\桌面\note\redis文章\images\check-system.png)
+
+### 18.5 检查配置文件
+
+```c
+ if (argv[1][0] != '-') {
+            /* Replace the config file in server.exec_argv with its absolute path. */
+            server.configfile = getAbsolutePath(argv[1]);
+            zfree(server.exec_argv[1]);
+            server.exec_argv[1] = zstrdup(server.configfile);
+            j = 2; // Skip this arg when parsing options
+        }
+```
+
+这段代码主要是处理Redis服务器的命令行参数。如果第一个参数不是以“-”开头，那么这个参数应该是配置文件的路径。此时，服务器会将配置文件的绝对路径存储在`server.configfile`中，并替换`server.exec_argv`数组中的配置文件路径参数为绝对路径。**最后，`j`被设置为2，这是为了在后续解析选项时跳过这个参数。**
+
+## 19 命令行配置
+
+```c
+   while(j < argc) {
+            /* Either first or last argument - Should we read config from stdin? */
+            if (argv[j][0] == '-' && argv[j][1] == '\0' && (j == 1 || j == argc-1)) {
+                config_from_stdin = 1;
+            }
+            else if (handled_last_config_arg && argv[j][0] == '-' && argv[j][1] == '-') {
+               /*
+               			************
+               */
+            } else {
+                /* Option argument */
+                options = sdscatrepr(options,argv[j],strlen(argv[j]));
+                options = sdscat(options," ");
+                handled_last_config_arg = 1;
+            }
+            j++;
+        }
+
+        
+```
+
+### 19.1 if
+
+```c
+if (argv[j][0] == '-' && argv[j][1] == '\0' && (j == 1 || j == argc-1)) {
+                config_from_stdin = 1;
+            }
+```
+
+如果当前命令行参数的第一个字符为 '-'，第二个字符为 '\0'，且该参数是第一个或最后一个参数，那么就表示这是一个 "-" 参数，表示从标准输入中读取配置文件。
+
+这个判断是用来检查命令行参数是否是一个单独的 `-`，如果是的话，表示程序需要从标准输入中读取配置。例如，在 Linux 命令行中运行 Redis 的命令为 `redis-server -`，这将使 Redis 从标准输入中读取配置。在这种情况下，程序将通过检查命令行参数是否为单个 `-` 来判断是否需要从标准输入中读取配置。
+
+![](D:\桌面\note\redis文章\images\终端输入.png)
+
+### 19.2 else if
+
+```c
+  else if (handled_last_config_arg && argv[j][0] == '-' && argv[j][1] == '-') 
+```
+
+如果已经处理完最后一个配置参数，而且当前参数以双破折线（--）开头，则进入以下分支。
+
+```c
+ if (sdslen(options)) options = sdscat(options,"\n");
+```
+
+这行代码是将 `options` 变量的内容末尾添加一个换行符，以确保下一行输出的内容和当前行的选项显示在不同行上，以提高输出的可读性。其中 `options` 变量是在解析命令行参数时用来记录指定的选项的一个字符串。
+
+```c
+options = sdscat(options,argv[j]+2);
+options = sdscat(options," ");
+```
+
+`argv[j]`是一个指向命令行参数字符串的指针，`argv[j][2]`表示这个字符串的第三个字符，因为C语言数组的下标从0开始。所以`argv[j]+2`表示从字符串的第三个字符开始的子字符串。这里的目的是为了跳过命令行参数的前缀`--`。
+
+这段代码的作用是将输入的参数解析成redis的配置选项，例如`--port 6379`。在代码中，当检测到参数以`--`开头时，将该参数作为选项的一部分，并将它加入一个字符串变量`options`中。
+
+首先，该段代码通过`sdslen()`函数获取`options`字符串的长度，若该字符串不为空，则在其末尾加上一个换行符`\n`，用于将不同的选项区分开来。
+
+然后，该段代码通过`sdslen()`函数获取当前参数的长度，将其作为选项的一部分加入`options`字符串，并在字符串末尾加上一个空格，以便将该选项与后面的参数分隔开来。最终生成的`options`字符串就是redis的配置选项。
+
+```c
+argv_tmp = sdssplitargs(argv[j], &argc_tmp);
+```
+
+`sdssplitargs` 函数是 Redis 中的一个字符串操作函数，其作用是将给定的字符串按照空格分隔符分成多个子字符串，并返回一个字符串数组，同时修改给定的参数 `argc_tmp` 来表示字符串数组的长度。
+
+在这里，`argv[j]` 表示一个命令行参数，它需要按照空格分隔符进行分割。分割后得到的字符串数组 `argv_tmp` 将在接下来的代码中被处理。
+
+```c
+ if (argc_tmp == 1) {
+          /* Means that we only have one option name, like --port or "--port " */     
+ }
+```
+
+```c
+ handled_last_config_arg = 0;
+```
+
+这行代码的作用是将 `handled_last_config_arg` 变量的值设为0，它被用来跟踪上一个参数是否是配置文件的路径名，以便下一个参数能够被正确地解析。当它被设置为0时，下一个参数将被视为一个新的配置项或选项，而不是上一个配置文件路径名的一部分。
+
+```c
+  if ((j != argc-1) && argv[j+1][0] == '-' && argv[j+1][1] == '-' &&
+                        !strcasecmp(argv[j], "--save"))
+                    {
+                        options = sdscat(options, "\"\"");
+                        handled_last_config_arg = 1;
+                    }
+```
+
+这段代码是处理特殊情况的。如果当前处理的参数是 "--save"，并且后面一个参数以 "--" 开头（即后面一个参数也是一个选项），那么就将 handled_last_config_arg 标志重置为0，然后在选项字符串 options 中加入一个空字符串 """"，以便将其与后面的选项分离开来。这个特殊处理的原因是为了与早期版本的 Redis 兼容，因为有些用户会从一个数组生成一个命令行，而当它为空时就会产生这种情况。
+
+```c
+  else if ((j == argc-1) && !strcasecmp(argv[j], "--save")) {
+                        options = sdscat(options, "\"\"");
+                    }
+```
+
+如果命令行最后一个参数是"--save"，且没有任何配置信息紧随其后，这里会将一个空字符串`""`追加到`options`字符串的末尾。这是为了使其与上面提到的特殊情况保持一致，从而可以处理空配置参数的情况。例如，"--save"选项被使用而没有任何配置信息紧随其后。
+
+```c
+ else if ((j != argc-1) && argv[j+1][0] == '-' && argv[j+1][1] == '-' &&
+                        !strcasecmp(argv[j], "--sentinel"))
+                    {
+                        options = sdscat(options, "");
+                        handled_last_config_arg = 1;
+                    }
+```
+
+这段代码是在解析 Redis 的命令行参数时，处理一些特殊的选项的情况。在这个 `else if` 语句中，它会检查是否遇到了 `--sentinel` 这个选项，并且如果下一个参数也是以 `--` 开头，就将 `handled_last_config_arg` 标志位设置为 1。
+
+`--sentinel` 是一个伪配置选项，它没有值。如果下一个参数也是以 `--` 开头，就说明它不是 `--sentinel` 选项的值，这时就需要将 `handled_last_config_arg` 标志位重置，以便后面的参数可以被正确解析。`options = sdscat(options, "");` 的作用是向 `options` 字符串中添加一个空字符串，表示 `--sentinel` 选项的存在。
+
+```c
+  else if ((j == argc-1) && !strcasecmp(argv[j], "--sentinel")) {
+                        options = sdscat(options, "");
+                    }
+```
+
+这段代码是针对解析Redis服务器启动参数的逻辑。在这个逻辑中，Redis使用argv[]数组存储启动参数，并根据参数类型进行不同的处理。
+
+具体来说，当解析到一个形如"- --config"的参数时，Redis需要将该参数作为一个配置文件路径处理。如果该参数后面紧跟着的是另一个参数，则说明该参数并不是最后一个参数，Redis需要将下一个参数作为一个普通参数处理，并将该参数设置为“已处理完最后一个配置文件参数”。如果下一个参数也是一个“--”类型的参数，则说明该参数后面没有其他参数了，因此Redis需要将该参数设置为最后一个参数，并将该参数设置为“已处理完最后一个配置文件参数”。
+
+当解析到一个形如"--save"或"--sentinel"的参数时，Redis需要将该参数作为一个配置项名处理。如果该参数后面紧跟着的是另一个参数，则说明该参数并不是最后一个参数，Redis需要将下一个参数作为该配置项的值处理，并将该参数设置为“已处理完最后一个配置文件参数”。如果下一个参数也是一个“--”类型的参数，则说明该参数后面没有其他参数了，因此Redis需要将该参数设置为最后一个参数，并将该参数设置为“已处理完最后一个配置文件参数”。如果该参数是最后一个参数，则Redis需要将该参数设置为该配置项的值。
+
+```c
+ else {
+                 
+                    handled_last_config_arg = 1;
+                }
+                sdsfreesplitres(argv_tmp, argc_tmp);
+            } 
+```
+
+如果当前参数以 "--" 开头，且同时包含配置选项名和选项值（如 "--port 6380"），则需要将 handled_last_config_arg 标志位设置为 1，以表明当前参数是一个新的配置选项。
+
+### 19.3 else
+
+```c
+else {
+                /* Option argument */
+                options = sdscatrepr(options,argv[j],strlen(argv[j]));
+                options = sdscat(options," ");
+                handled_last_config_arg = 1;
+            }
+```
+
+这段代码是在处理命令行参数时的一种情况，即当前参数既不是配置文件的参数，也不是选项参数，而是一个选项参数的值。在这种情况下，将当前参数作为选项参数的值添加到 `options` 字符串中，并将 `handled_last_config_arg` 标记设置为 1，表示已处理完上一个配置参数，可以继续处理下一个参数。
+
+```c
+   sds *argv_tmp;
+        int argc_tmp;
+        int handled_last_config_arg = 1;
+        while(j < argc) {
+            /* Either first or last argument - Should we read config from stdin? */
+            if (argv[j][0] == '-' && argv[j][1] == '\0' && (j == 1 || j == argc-1)) {
+                config_from_stdin = 1;
+            }
+            /* All the other options are parsed and conceptually appended to the
+             * configuration file. For instance --port 6380 will generate the
+             * string "port 6380\n" to be parsed after the actual config file
+             * and stdin input are parsed (if they exist).
+             * Only consider that if the last config has at least one argument. */
+            else if (handled_last_config_arg && argv[j][0] == '-' && argv[j][1] == '-') {
+                /* Option name */
+                if (sdslen(options)) options = sdscat(options,"\n");
+                /* argv[j]+2 for removing the preceding `--` */
+                options = sdscat(options,argv[j]+2);
+                options = sdscat(options," ");
+
+                argv_tmp = sdssplitargs(argv[j], &argc_tmp);
+                if (argc_tmp == 1) {
+                    /* Means that we only have one option name, like --port or "--port " */
+                    handled_last_config_arg = 0;
+
+                    if ((j != argc-1) && argv[j+1][0] == '-' && argv[j+1][1] == '-' &&
+                        !strcasecmp(argv[j], "--save"))
+                    {
+                        /* Special case: handle some things like `--save --config value`.
+                         * In this case, if next argument starts with `--`, we will reset
+                         * handled_last_config_arg flag and append an empty "" config value
+                         * to the options, so it will become `--save "" --config value`.
+                         * We are doing it to be compatible with pre 7.0 behavior (which we
+                         * break it in #10660, 7.0.1), since there might be users who generate
+                         * a command line from an array and when it's empty that's what they produce. */
+                        options = sdscat(options, "\"\"");
+                        handled_last_config_arg = 1;
+                    }
+                    else if ((j == argc-1) && !strcasecmp(argv[j], "--save")) {
+                        /* Special case: when empty save is the last argument.
+                         * In this case, we append an empty "" config value to the options,
+                         * so it will become `--save ""` and will follow the same reset thing. */
+                        options = sdscat(options, "\"\"");
+                    }
+                    else if ((j != argc-1) && argv[j+1][0] == '-' && argv[j+1][1] == '-' &&
+                        !strcasecmp(argv[j], "--sentinel"))
+                    {
+                        /* Special case: handle some things like `--sentinel --config value`.
+                         * It is a pseudo config option with no value. In this case, if next
+                         * argument starts with `--`, we will reset handled_last_config_arg flag.
+                         * We are doing it to be compatible with pre 7.0 behavior (which we
+                         * break it in #10660, 7.0.1). */
+                        options = sdscat(options, "");
+                        handled_last_config_arg = 1;
+                    }
+                    else if ((j == argc-1) && !strcasecmp(argv[j], "--sentinel")) {
+                        /* Special case: when --sentinel is the last argument.
+                         * It is a pseudo config option with no value. In this case, do nothing.
+                         * We are doing it to be compatible with pre 7.0 behavior (which we
+                         * break it in #10660, 7.0.1). */
+                        options = sdscat(options, "");
+                    }
+                } else {
+                    /* Means that we are passing both config name and it's value in the same arg,
+                     * like "--port 6380", so we need to reset handled_last_config_arg flag. */
+                    handled_last_config_arg = 1;
+                }
+                sdsfreesplitres(argv_tmp, argc_tmp);
+            } else {
+                /* Option argument */
+                options = sdscatrepr(options,argv[j],strlen(argv[j]));
+                options = sdscat(options," ");
+                handled_last_config_arg = 1;
+            }
+            j++;
+        }
+```
+
