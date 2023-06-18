@@ -400,7 +400,7 @@ addrlen:
 3. 绑定Socket对象：使用bind()函数将Socket对象与特定的IP地址和端口号绑定。例如：
 
 4. ```c
-   scssCopy codestruct sockaddr_in serverAddress;
+   struct sockaddr_in serverAddress;
    memset(&serverAddress, 0, sizeof(serverAddress));
    serverAddress.sin_family = AF_INET;
    serverAddress.sin_port = htons(port);
@@ -412,10 +412,9 @@ addrlen:
 5. 监听连接请求：使用listen()函数开始监听连接请求，并指定最大连接数。例如：
 
 6. ```c
-   scssCopy code
    listen(serverSocket, 5);
    ```
-
+   
 7. 接受连接请求：使用accept()函数接受来自客户端的连接请求，并返回一个新的Socket对象，用于与客户端进行通信。例如：
 
 8. ```c
@@ -427,7 +426,7 @@ addrlen:
 9. 与客户端通信：使用send()和recv()函数向连接的对方发送数据并接收数据。例如：
 
 10. ```c
-    scssCopy codechar buffer[1024];
+    char buffer[1024];
     memset(buffer, 0, sizeof(buffer));
     recv(clientSocket, buffer, sizeof(buffer), 0);
     
