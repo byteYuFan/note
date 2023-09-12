@@ -124,9 +124,9 @@
 
 `release`：https://github.com/byteYuFan/NAT/releases
 
-![](D:\桌面\note\NAT-Doc\images\8.png)
+![](.\images\8.png)
 
-![](D:\桌面\note\NAT-Doc\images\9.png)
+![](.\images\9.png)
 
 
 
@@ -134,7 +134,7 @@
 
 官网地址`pogf.com.cn:8000`,你可以根据自己需要的版本进行下载使用
 
-![](D:\桌面\note\NAT-Doc\images\10.png)
+![](.\images\10.png)
 
 ### 4.2. 数据库配置
 
